@@ -1,65 +1,25 @@
-# Install essential libraries (please comment them after installing)
-# Using Ctrl + Shift + C
-#
+# Cài đặt gói cần thiết (chỉ cần cài 1 lần, rồi comment để chạy cho các lần sau)
 # install.packages("readr")
 # install.packages("dplyr")
 # install.packages("tidyr")
 # install.packages("stringr")
+# install.packages("purrr")
 
-# Required libraries
+# Import thư viện
 library(readr)
 library(dplyr)
 library(tidyr)
 library(stringr)
+library(purrr)
 
-# Function to remove rows with missing values in a specific column
-CleanData_rm <- function(dataset, column_name) {
-  dataset %>% filter(
-    !is.na({{ column_name }}) &
-      {{ column_name }} != "N/A" &
-      {{ column_name }} != ""
-  )
+# ----------- Các hàm hỗ trợ xử lý ---------- #
+
+# Hàm kiểm tra dữ liệu bị thiếu
+is_missing <- function(x) {
+  is.na(x) | x == "" | toupper(x) == "N/A"
 }
 
-# Function to extract numeric values from a string
-get_num <- function(x) {
-  if (is.na(x) || x == "N/A" || x == "") return(NA)
-  
-  num <- as.numeric(str_extract(x, "[0-9.]+"))
-  unit <- str_extract(x, "[A-Za-z]+") %>% toupper()
-  
-  if (!is.na(unit) && unit == "KB")
-    num <- num / 1024
-  
-  return(num)
-}
-
-# Function to split value and unit
-split_unit_value <- function(x) {
-  if (is.na(x) || x == "N/A" || x == "") return(list(value = NA, unit = NA))
-  
-  num_part <- str_extract(x, "[0-9.]+")
-  unit_part <- str_replace(x, num_part, "") %>% str_trim()
-  
-  list(value = as.numeric(num_part), unit = unit_part)
-}
-
-# Function to convert memory units to megabytes
-unit_to_M <- function(x) {
-  if (is.numeric(x)) return(x)
-  if (is.na(x) || x == "N/A" || x == "") return(NA)
-  
-  num <- get_num(x)
-  if (is.na(num)) return(NA)
-  
-  unit <- x %>% gsub("[0-9. ]", "", .) %>% substr(1, 1) %>% toupper()
-  fac <- switch(unit,
-                K = 1 / 1000, M = 1, G = 1000, T = 1000000, 1
-  )
-  return(num * fac)
-}
-
-# Fixed clean_text_data function to handle vectors
+# Hàm lọc văn bản khỏi các ký tự không chuẩn (ASCII)
 clean_text_data <- function(text_vector) {
   sapply(text_vector, function(text) {
     if (is.na(text)) {
@@ -70,206 +30,217 @@ clean_text_data <- function(text_vector) {
   })
 }
 
-# Function to load dataset
+# Hàm chuyển đổi đơn vị sang đơn vị chuẩn
+convert_unit <- function(x, base_unit = "MB") {
+  if (is_missing(x)) return(NA)
+  
+  # Lấy số và chuẩn hóa đơn vị (case insensitive)
+  num <- as.numeric(str_extract(x, "[0-9.]+"))
+  unit <- str_to_upper(str_extract(x, regex("([kKmMgGtT][bB]|[mMgG][hH][zZ]|[gG][tT]/[sS])", ignore_case = TRUE)))
+  
+  if (is.na(num)) return(NA)
+  
+  # Bổ sung thêm các đơn vị thiếu
+  unit <- case_when(
+    unit %in% c("GHZ", "Ghz") ~ "GHz",
+    unit %in% c("MHZ", "Mhz") ~ "MHz",
+    unit %in% c("GT/S", "Gt/s") ~ "GT/s",
+    TRUE ~ unit
+  )
+  
+  # Bảng chuyển đổi mở rộng
+  conversion_table <- list(
+    "MB" = list("KB" = 1/1024, "MB" = 1, "GB" = 1024, "TB" = 1024^2),
+    "GHz" = list("MHz" = 1/1000, "GHz" = 1, "GT/s" = 1),
+    "MHz" = list("MHz" = 1, "GHz" = 1000)
+  )
+  
+  if (base_unit %in% names(conversion_table) && unit %in% names(conversion_table[[base_unit]])) {
+    factor <- conversion_table[[base_unit]][[unit]]
+    return(round(num * factor, 2))
+  }
+  
+  return(NA)
+}
+
+# ----Hàm xử lý dữ liệu dành cho cột riêng biệt ------#
+
+# Chuẩn hóa dữ liệu cột Cache
+normalize_cache <- function(cache_str) {
+  if (is_missing(cache_str)) return(list(Cache_Normalized = NA, Cache_Value_MB = NA, Cache_Type = NA))
+  
+  num <- convert_unit(cache_str, base_unit = "MB")
+  type <- str_extract(cache_str, "(SmartCache|L2|L3|Last Level Cache)")
+  
+  result <- paste0(num, " MB")
+  if (!is.na(type)) result <- paste(result, type)
+  
+  return(list(Cache_Normalized = result, Cache_Value_MB = num, Cache_Type = type))
+}
+
+# ---------------- Hàm xử lý dữ liệu ---------------- #
+
+# Hàm load dữ liệu từ file CSV
 load_dataset <- function(file_path) {
   dataset <- read_csv(file_path)
   return(dataset)
 }
 
-# Function to select columns
+# Chọn cột
 select_columns <- function(dataset, columns) {
-  dataset[, columns]
+  return(dataset[, columns])
 }
 
-# Function to clean data
+# Hàm làm sạch dữ liệu
 clean_data <- function(data) {
-  # Process data with pipe
   data <- data %>%
-    # Standard cleaning for character columns
     mutate(across(where(is.character), ~na_if(., "N/A")),
            across(where(is.character), ~na_if(., ""))) %>%
-    
-    mutate(
-      Cache_Size = sapply(Cache, function(x) {
-        if (is.na(x)) return(NA)
-        num <- as.numeric(str_extract(x, "[0-9.]+"))
-        unit <- str_extract(x, "(?i)(KB|MB|GB)")
-        factor <- case_when(
-          grepl("KB", unit, ignore.case = TRUE) ~ 1/1024,
-          grepl("MB", unit, ignore.case = TRUE) ~ 1,
-          grepl("GB", unit, ignore.case = TRUE) ~ 1024,
-          TRUE ~ 1
-        )
-        if (is.na(num))
-          return(NA)
-        return(round(num * factor, 2))
-      }),
-      Cache_Type = sapply(Cache, function(x) {
-        if (is.na(x)) return(NA)
-        str_extract(x, "(?i)(SmartCache|L[23]|Last Level Cache)")
-      })
-    ) %>%
     
     mutate(
       Product_Collection = if ("Product_Collection" %in% names(.)) {
         clean_text_data(Product_Collection)
       } else Product_Collection,
+      cache_data = map(Cache, normalize_cache),
+      Cache = map_chr(cache_data, "Cache_Normalized"),
+      Cache_Value_MB = map_dbl(cache_data, "Cache_Value_MB"),
+      Cache_Type = map_chr(cache_data, "Cache_Type"),
       
       Launch_Quarter = str_extract(Launch_Date, "Q[1-4]"),
       Launch_Year = ifelse(!is.na(str_extract(Launch_Date, "\\d{2}$")),
                            paste0("20", str_extract(Launch_Date, "\\d{2}$")),
                            NA),
-      
-      Bus_Speed_Value = sapply(Bus_Speed, function(x) split_unit_value(x)$value),
-      Bus_Speed_Unit = sapply(Bus_Speed, function(x) split_unit_value(x)$unit),
-      
-      Lithography = sapply(Lithography, get_num),
-      Max_Memory_Bandwidth = sapply(Max_Memory_Bandwidth, unit_to_M),
-      Max_Memory_Size = sapply(Max_Memory_Size, unit_to_M),
-      Processor_Base_Frequency = sapply(Processor_Base_Frequency, get_num),
-      Recommended_Customer_Price = as.numeric(gsub("[\\$,]", "", Recommended_Customer_Price)),
-      TDP = sapply(TDP, get_num)
+      Processor_Base_Frequency = sapply(Processor_Base_Frequency, convert_unit, base_unit = "GHz")
     ) %>%
-    
-    # Remove Bus_Speed if it exists
-    {
-      if ("Bus_Speed" %in% names(.)) {
-        select(., -Bus_Speed)
-      } else {
-        .
-      }
-    } %>%
-    # Rearrange columns in preferred order
-    {
-      desired_order <- c(
-        "Product_Collection", "Vertical_Segment", "Launch_Date",
-        "Launch_Quarter", "Launch_Year",
-        "Bus_Speed_Value", "Bus_Speed_Unit",
-        "Cache", "Cache_Size", "Cache_Type",
-        "Lithography", "Max_Memory_Bandwidth", "Max_nb_of_Memory_Channels",
-        "Max_Memory_Size", "nb_of_Cores",
-        "Processor_Base_Frequency", "Recommended_Customer_Price",
-        "TDP", "DirectX_Support", "PCI_Express_Revision"
-      )
-      existing <- desired_order[desired_order %in% names(.)]
-      select(., all_of(existing), everything())
-    }
+    select(-cache_data)
+  
+  desired_columns <- c(
+    "Product_Collection",
+    "Vertical_Segment",
+    "Launch_Date",
+    "Launch_Year",
+    "Lithography",
+    "nb_of_Cores",
+    "nb_of_Threads",
+    "Processor_Base_Frequency",
+    "Cache",
+    "Cache_Value_MB",
+    "Cache_Type",
+    "TDP",
+    "Max_Memory_Bandwidth",
+    "Embedded_Options_Available"
+  )
+  
+  existing_columns <- desired_columns[desired_columns %in% names(data)]
+  data <- data %>% select(all_of(existing_columns))
   
   return(data)
 }
 
+# Hàm tính toán số lượng dữ liệu bị thiếu
 check_missing <- function(data) {
-  missing_counts <- colSums(is.na(data))
-  missing_df <- data.frame(
-    Variable = names(missing_counts),
-    Missing_Count = missing_counts
-  ) %>%
-    arrange(desc(Missing_Count))
+  total_rows <- nrow((data)
+  missing_counts <- sapply(data, function(col) sum(is_missing(col)))
+  missing_percent <- round(missing_counts / total_rows * 100, 2)
   
-  return(missing_df)
+  return(data.frame(
+    Variable = names(data),
+    Missing_Count = missing_counts,
+    Missing_Percent = missing_percent
+  ) %>% arrange(desc(Missing_Count)))
 }
 
-# Function to impute missing values
+# Hàm điền dữ liệu bị thiếu
 impute_missing <- function(data) {
+  integer_cols <- c("nb_of_Cores", "nb_of_Threads")
   numeric_cols <- names(data)[sapply(data, is.numeric)]
   for (col in numeric_cols) {
-    if (any(is.na(data[[col]]))) {
-      median_val <- median(data[[col]], na.rm = TRUE)
-      data[[col]][is.na(data[[col]])] <- median_val
+    missing_idx <- is_missing(data[[col]])
+    if (any(missing_idx)) {
+      mean_val <- mean(data[[col]][!missing_idx], na.rm = TRUE)
+      if (col %in% integer_cols)
+        data[[col]][missing_idx] <- round(mean_val)
+      else
+        data[[col]][missing_idx] <- round(mean_val, 2)
     }
   }
   
   char_cols <- names(data)[sapply(data, is.character)]
   for (col in char_cols) {
-    if (any(is.na(data[[col]]))) {
-      mode_val <- names(which.max(table(data[[col]][!is.na(data[[col]])])))
-      data[[col]][is.na(data[[col]])] <- mode_val
+    missing_idx <- is_missing(data[[col]])
+    if (any(missing_idx)) {
+      non_missing <- data[[col]][!missing_idx]
+      mode_val <- names(which.max(table(non_missing)))
+      data[[col]][missing_idx] <- mode_val
     }
   }
   
   return(data)
 }
 
-# Main processing function
-process_data <- function(file_path, selected_cols = NULL, perform_imputation = TRUE) {
-  if (is.null(selected_cols)) {
-    selected_cols <- c(
-      "Product_Collection",
-      "Vertical_Segment",
-      "Launch_Date",
-      "Bus_Speed",
-      "Cache",
-      "Lithography",
-      "Max_Memory_Bandwidth",
-      "Max_nb_of_Memory_Channels",
-      "Max_Memory_Size",
-      "nb_of_Cores",
-      "Processor_Base_Frequency",
-      "Recommended_Customer_Price",
-      "TDP",
-      "DirectX_Support",
-      "PCI_Express_Revision"
-    )
-  }
-  
-  # Step 1: Load data
-  raw_data <- load_dataset(file_path)
-  
-  # Step 2: Select columns
-  selected_data <- select_columns(raw_data, selected_cols)
-  
-  # Step 3: Clean data (simplified)
-  cleaned_data <- clean_data(selected_data)
-  
-  # Step 4: Check missing values
-  missing_summary <- check_missing(cleaned_data)
-  
-  # Step 5: Impute missing values (optional)
-  final_data <- if (perform_imputation) {
-    impute_missing(cleaned_data)
-  } else {
-    cleaned_data
-  }
-  
-  # Return results
-  results <- list(
-    raw_data = raw_data,
-    selected_data = selected_data,
-    cleaned_data = cleaned_data,
-    final_data = final_data,
-    missing_summary = missing_summary
-  )
-  
-  return(results)
-}
+# ----------- Thực thi --------------- #
 
-# Sample choosing
+# File CSV đầu vào
 file_path <- "./Data/Intel_CPUs.csv"
+
+# Các cột cần lấy
 selected_cols <- c(
   "Product_Collection",
   "Vertical_Segment",
   "Launch_Date",
-  "Bus_Speed",
-  "Cache",
   "Lithography",
-  "Max_Memory_Bandwidth",
-  "Max_nb_of_Memory_Channels",
-  "Max_Memory_Size",
   "nb_of_Cores",
+  "nb_of_Threads",
   "Processor_Base_Frequency",
-  "Recommended_Customer_Price",
+  "Cache",
+  "Cache_Value_MB",
+  "Cache_Type",
   "TDP",
-  "DirectX_Support",
-  "PCI_Express_Revision"
+  "Max_Memory_Bandwidth",
+  "Embedded_Options_Available"
 )
 
-# Process the data
-results <- process_data(file_path, selected_cols)
-final_data <- results$final_data
+# Chọn lọc một số biến cần phân tích
 
-# View the simplified results
-head(final_data)
+raw_data <- load_dataset(file_path)
+# Nếu không chỉ định columns, sử dụng danh sách mặc định (chỉ những cột có trong raw_data)
+if (is.null(selected_cols)) {
+  selected_cols <- c(
+    "Product_Collection",
+    "Vertical_Segment",
+    "Launch_Date",
+    "Lithography",
+    "nb_of_Cores",
+    "nb_of_Threads",
+    "Processor_Base_Frequency",
+    "Cache",
+    "TDP",
+    "Max_Memory_Bandwidth",
+    "Embedded_Options_Available"
+  )
+}
+
+available_cols <- selected_cols[selected_cols %in% names(raw_data)]
+selected_data <- select_columns(raw_data, available_cols)
+
+# Làm sạch dữ liệu
+cleaned_data <- clean_data(selected_data)
+
+# Kiểm tra số lượng và tỷ lệ dữ liệu bị khuyết
+missing_summary <- check_missing(cleaned_data)
+print(missing_summary)
+
+# Xử lý dữ liệu bị khuyết bằng chiến thuật lấy trung bình và trung vị
+perform_imputation = TRUE
+final_data <- if (perform_imputation) {
+  impute_missing(cleaned_data)
+} else {
+  cleaned_data
+}
+
+# Xem dữ liệu đầu ra
+print(head(final_data))
 str(final_data)
 
-# Export data preprocessed for checking
+# Xuất dữ liệu ra file để kiểm thử
 write_csv(final_data, "./Test/processed_Intel_CPUs.csv")
