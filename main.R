@@ -1,4 +1,3 @@
-# xử lý dữ liệu
 # Section 1: Data Preprocessing - Intel CPU Data Cleaning
 ##########################################################
 
@@ -11,9 +10,6 @@ library(dplyr)
 library(tidyr)
 library(stringr)
 library(purrr)
-library(ggplot2)
-library(corrplot)
-
 
 # ========== Utility functions for cleaning ==========
 
@@ -107,61 +103,20 @@ clean_data <- function(data) {
       Launch_Year = ifelse(!is.na(str_extract(Launch_Date, "\\d{2}$")),
                            paste0("20", str_extract(Launch_Date, "\\d{2}$")),
                            NA),
-      
+      Launch_Year = as.numeric(Launch_Year),
       Processor_Base_Frequency = sapply(Processor_Base_Frequency, convert_unit, base_unit = "GHz")
     ) %>%
+    filter(is_missing(Launch_Year) | Launch_Year <= 2025) %>%  # lọc theo điều kiện miền
     select(-cache_data)
   
   desired_columns <- c(
-    "Product_Collection", "Vertical_Segment", "Launch_Date", "Launch_Year", "Lithography",
-    "nb_of_Cores", "nb_of_Threads", "Processor_Base_Frequency", "Cache", "Cache_Value_MB",
+    "Product_Collection", "Vertical_Segment", "Launch_Date", "Launch_Year", "Launch_Quarter", "Lithography",
+    "nb_of_Cores", "nb_of_Threads", "Processor_Base_Frequency", "Cache_Value_MB",
     "Cache_Type", "TDP", "Max_Memory_Bandwidth", "Embedded_Options_Available"
   )
   
   existing_columns <- desired_columns[desired_columns %in% names(data)]
   data <- data %>% select(all_of(existing_columns))
-  
-  return(data)
-}
-
-# Check summary of missing values
-check_missing <- function(data) {
-  total_rows <- nrow(data)
-  missing_counts <- sapply(data, function(col) sum(is_missing(col)))
-  missing_percent <- round(missing_counts / total_rows * 100, 2)
-  
-  return(data.frame(
-    Variable = names(data),
-    Missing_Count = missing_counts,
-    Missing_Percent = missing_percent
-  ) %>% arrange(desc(Missing_Count)))
-}
-
-# Impute missing values: mean for numeric, mode for categorical
-impute_missing <- function(data) {
-  integer_cols <- c("nb_of_Cores", "nb_of_Threads")
-  numeric_cols <- names(data)[sapply(data, is.numeric)]
-  
-  for (col in numeric_cols) {
-    missing_idx <- is_missing(data[[col]])
-    if (any(missing_idx)) {
-      mean_val <- mean(data[[col]][!missing_idx], na.rm = TRUE)
-      if (col %in% integer_cols)
-        data[[col]][missing_idx] <- round(mean_val)
-      else
-        data[[col]][missing_idx] <- round(mean_val, 2)
-    }
-  }
-  
-  char_cols <- names(data)[sapply(data, is.character)]
-  for (col in char_cols) {
-    missing_idx <- is_missing(data[[col]])
-    if (any(missing_idx)) {
-      non_missing <- data[[col]][!missing_idx]
-      mode_val <- names(which.max(table(non_missing)))
-      data[[col]][missing_idx] <- mode_val
-    }
-  }
   
   return(data)
 }
@@ -202,8 +157,125 @@ final_data <- if (perform_imputation) {
   impute_missing(cleaned_data)
 } else cleaned_data
 
+# Preview final cleaned data
+print(head(final_data))
+str(final_data)
+
+# Export to CSV for testing (optional)
+write_csv(final_data, "./Test/processed_Intel_CPUs.csv")
+
+
+#__________________________KIỂM ĐỊNH 2 MẪU______________________
+# Kiểm định giả thuyết:
+# H0: Trung bình TDP hai nhóm bằng nhau
+# H1: Trung bình TDP hai nhóm khác nhau
+# Hàm chuẩn hóa TDP (tách số và đơn vị)
+normalize_tdp <- function(tdp_str) {
+  if (is_missing(tdp_str)) return(NA)
+  num <- as.numeric(str_extract(tdp_str, "[0-9.]+"))  
+  return(num)
+}
+
+# Áp dụng hàm chuẩn hóa TDP cho cột `TDP`
+final_data$TDP <- sapply(final_data$TDP, normalize_tdp)
+# Phân dữ liệu thành 2 nhóm:
+final_data$Group <- ifelse(final_data$Embedded_Options_Available == "Yes", "Group_Yes", "Group_No")
+Embedded__Option <- subset(final_data, Group == "Group_Yes")
+Non_Embedded__Option  <- subset(final_data, Group == "Group_No")
+# Thống kê cho 2 mẫu:
+n1 <- length(Embedded__Option$TDP)
+x1 <- mean(Embedded__Option$TDP)
+s1 <- sd(Embedded__Option$TDP)
+
+n2 <- length(Non_Embedded__Option$TDP)
+x2 <- mean(Non_Embedded__Option$TDP)
+s2 <- sd(Non_Embedded__Option$TDP)
+data.frame(n1,x1,s1,n2,x2,s2)
+
+# Kiểm định chuẩn cho từng nhóm
+# Vẽ Q-Q plot cho nhóm "Group_Yes"
+qqnorm(Embedded__Option$TDP)
+qqline(Embedded__Option$TDP)
+# Shapiro test 
+shapiro.test(Embedded__Option$TDP)
+# Vẽ Q-Q plot cho nhóm "Group_No"
+qqnorm(Non_Embedded__Option$TDP)
+qqline(Non_Embedded__Option$TDP)
+#Shapiro test
+shapiro.test(Non_Embedded__Option$TDP)
+#Tính giá trị kiểm định và xác định vùng bác bỏ
+z0 <- (x1 - x2) / sqrt(s1^2/n1 + s2^2/n2)
+z_half_alpha <- qnorm(p = 0.025, lower.tail = FALSE)  
+cat("z0 =", z0, " | z_alpha =", z_half_alpha, "\n")
+
+# Kiểm tra xem z0 có nằm trong miền bác bỏ không
+if (abs(z0) > z_half_alpha) {
+  cat("→ Bác bỏ H0. Có sự khác biệt TDP giữa hai nhóm.\n")
+} else {
+  cat("→ Không đủ bằng chứng để bác bỏ H0. Trung bình TDP có thể giống nhau.\n")
+}
+
+#______________ANOVA_______________________________
+# Mô hình ANOVA 1 yếu tố: So sánh TDP giữa các phân khúc CPU:
+# Giả thuyết H0: Trung bình TDP ở các phân khúc là bằng nhau
+# Giả thuyết H1: Có ít nhất hai phân khúc có TDP trung bình khác nhau
+# Kiểm tra các giả định cho mô hình ANOVA:
+# Giả định 1: Dữ liệu tuân theo phân phối chuẩn
+# Mobile 
+Mobile_data <- subset(final_data,final_data$Vertical_Segment=="Mobile")
+qqnorm(Mobile_data$TDP)
+qqline(Mobile_data$TDP)
+shapiro.test(Mobile_data$TDP)
+# Server
+Server_data <- subset(final_data,final_data$Vertical_Segment=="Server")
+qqnorm(Server_data$TDP)
+qqline(Server_data$TDP)
+shapiro.test(Server_data$TDP)
+# Desktop 
+Desktop_data <- subset(final_data,final_data$Vertical_Segment=="Desktop")
+qqnorm(Desktop_data$TDP)
+qqline(Desktop_data$TDP)
+shapiro.test(Desktop_data$TDP)
+# Embedded 
+Embedded_data <- subset(final_data,final_data$Vertical_Segment=="Embedded")
+qqnorm(Embedded_data$TDP)
+qqline(Embedded_data$TDP)
+shapiro.test(Embedded_data$TDP)
+# Giả định 2: Phương sai giữa các nhóm là bằng nhau
+library(car)
+leveneTest(TDP~as.factor(Vertical_Segment),final_data)
+# Giả sử thỏa 
+anova_vs <- aov(TDP ~ Vertical_Segment, data = final_data)
+summary(anova_vs)
+# Thực hiện so sánh bội
+tukey_result <- TukeyHSD(anova_vs)
+print(tukey_result)
+
+# Tạo dataframe từ kết quả Tukey
+tukey_df <- as.data.frame(tukey_result$Vertical_Segment)
+tukey_df$comparison <- rownames(tukey_result$Vertical_Segment)
+
+# Rút gọn tên nhóm (Server → S, Embedded → E, Mobile → M, Desktop → D)
+tukey_df$short_label <- tukey_df$comparison
+tukey_df$short_label <- gsub("Server", "S", tukey_df$short_label)
+tukey_df$short_label <- gsub("Embedded", "E", tukey_df$short_label)
+tukey_df$short_label <- gsub("Mobile", "M", tukey_df$short_label)
+tukey_df$short_label <- gsub("Desktop", "D", tukey_df$short_label)
+
+# Vẽ biểu đồ bằng ggplot2
+library(ggplot2)
+
+ggplot(tukey_df, aes(x = diff, y = reorder(short_label, diff))) +
+  geom_point(size = 3, color = "#1f77b4") +
+  geom_errorbarh(aes(xmin = lwr, xmax = upr), height = 0.3, color = "#1f77b4") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    x = "Differences in mean levels of Vertical_Segment"
+  ) +
+  theme_minimal(base_size = 14)
+
 # boxplot: TDP theo Vertical_Segment
-plot1 <- ggplot(data_clean, aes(x = Vertical_Segment, y = TDP, fill = Vertical_Segment)) +
+plot1 <- ggplot(final_data, aes(x = Vertical_Segment, y = TDP, fill = Vertical_Segment)) +
   geom_boxplot() +
   theme_minimal() +
   labs(title = "TDP and Vertical Segment",
@@ -222,8 +294,8 @@ print(plot1)
 
 # boxplot: TDP theo Vertical_Segment và Launch_Year
 # Tạo nhóm năm (3-4 năm mỗi nhóm)
-data_cln <- data_clean %>%
-  filter(!is.na(Launch_Year) & as.numeric(Launch_Year) <= 2025) %>%
+data_cln <- final_data %>%
+  # filter(!is.na(Launch_Year) & as.numeric(Launch_Year) <= 2025) %>%
   mutate(Year_Group = case_when(
     Launch_Year >= 2000 & Launch_Year <= 2003 ~ "2000-2003",
     Launch_Year >= 2004 & Launch_Year <= 2007 ~ "2004-2007",
@@ -283,12 +355,12 @@ create_scatter_plot <- function(data, x_var, x_label, filename) {
 }
 
 # Vẽ các scatter plot
-create_scatter_plot(data_clean, "Vertical_Segment", "Vertical Segment", "Scatter_TDP_vs_Vertical_Segment.png")
-create_scatter_plot(data_clean, "Launch_Year", "Launch Year", "Scatter_TDP_vs_Launch_Year.png")
-create_scatter_plot(data_clean, "Lithography", "Lithography (nm)", "Scatter_TDP_vs_Lithography.png")
-create_scatter_plot(data_clean, "nb_of_Cores", "Number of Cores", "Scatter_TDP_vs_nb_of_Cores.png")
-create_scatter_plot(data_clean, "nb_of_Threads", "Number of Threads", "Scatter_TDP_vs_nb_of_Threads.png")
-create_scatter_plot(data_clean, "Processor_Base_Frequency", "Processor Base Frequency (GHz)", "Scatter_TDP_vs_Processor_Base_Frequency.png")
-create_scatter_plot(data_clean, "Cache_Value_MB", "Cache (MB)", "Scatter_TDP_vs_Cache_Value_MB.png")
-create_scatter_plot(data_clean, "Embedded_Options_Available", "Embedded Options Available", "Scatter_TDP_vs_Embedded_Options_Available.png")
-create_scatter_plot(data_clean, "Max_Memory_Bandwidth", "Max Memory Bandwidth (GB/s)", "Scatter_TDP_vs_Max_Memory_Bandwidth.png")
+create_scatter_plot(final_data, "Vertical_Segment", "Vertical Segment", "Scatter_TDP_vs_Vertical_Segment.png")
+create_scatter_plot(final_data, "Launch_Year", "Launch Year", "Scatter_TDP_vs_Launch_Year.png")
+create_scatter_plot(final_data, "Lithography", "Lithography (nm)", "Scatter_TDP_vs_Lithography.png")
+create_scatter_plot(final_data, "nb_of_Cores", "Number of Cores", "Scatter_TDP_vs_nb_of_Cores.png")
+create_scatter_plot(final_data, "nb_of_Threads", "Number of Threads", "Scatter_TDP_vs_nb_of_Threads.png")
+create_scatter_plot(final_data, "Processor_Base_Frequency", "Processor Base Frequency (GHz)", "Scatter_TDP_vs_Processor_Base_Frequency.png")
+create_scatter_plot(final_data, "Cache_Value_MB", "Cache (MB)", "Scatter_TDP_vs_Cache_Value_MB.png")
+create_scatter_plot(final_data, "Embedded_Options_Available", "Embedded Options Available", "Scatter_TDP_vs_Embedded_Options_Available.png")
+create_scatter_plot(final_data, "Max_Memory_Bandwidth", "Max Memory Bandwidth (GB/s)", "Scatter_TDP_vs_Max_Memory_Bandwidth.png")
