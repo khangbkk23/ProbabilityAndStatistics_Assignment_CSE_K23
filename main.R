@@ -103,14 +103,15 @@ clean_data <- function(data) {
       Launch_Year = ifelse(!is.na(str_extract(Launch_Date, "\\d{2}$")),
                            paste0("20", str_extract(Launch_Date, "\\d{2}$")),
                            NA),
-      
+      Launch_Year = as.numeric(Launch_Year),
       Processor_Base_Frequency = sapply(Processor_Base_Frequency, convert_unit, base_unit = "GHz")
     ) %>%
+    filter(is_missing(Launch_Year) | Launch_Year <= 2025) %>%
     select(-cache_data)
   
   desired_columns <- c(
-    "Product_Collection", "Vertical_Segment", "Launch_Date", "Launch_Year", "Lithography",
-    "nb_of_Cores", "nb_of_Threads", "Processor_Base_Frequency", "Cache", "Cache_Value_MB",
+    "Product_Collection", "Vertical_Segment", "Launch_Date", "Launch_Year", "Launch_Quarter", "Lithography",
+    "nb_of_Cores", "nb_of_Threads", "Processor_Base_Frequency", "Cache_Value_MB",
     "Cache_Type", "TDP", "Max_Memory_Bandwidth", "Embedded_Options_Available"
   )
   
