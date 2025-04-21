@@ -136,7 +136,7 @@ check_missing <- function(data) {
 
 # Impute missing values: mean for numeric, mode for categorical
 impute_missing <- function(data) {
-  integer_cols <- c("nb_of_Cores", "nb_of_Threads")
+  integer_cols <- c("Launch_Year","nb_of_Cores", "nb_of_Threads")
   numeric_cols <- names(data)[sapply(data, is.numeric)]
   
   for (col in numeric_cols) {
